@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小红书排版工具 - xhs_layout</title>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f0f0; height: 100vh; display: flex; flex-direction: column; }
+
+  .toolbar { background: #fff; padding: 12px 24px; border-bottom: 1px solid #ddd; display: flex; align-items: center; gap: 16px; }
+  .toolbar h1 { font-size: 18px; font-weight: 700; color: #333; }
+  .toolbar .hint { font-size: 13px; color: #999; }
+
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* 左侧 */
+  .left-panel { width: 420px; min-width: 360px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; overflow-y: auto; }
+  .left-panel h2 { font-size: 14px; font-weight: 600; color: #555; padding: 12px 16px 8px; border-bottom: 1px solid #eee; }
+
+  .editor-area { flex: 1; min-height: 200px; display: flex; flex-direction: column; }
+  .editor-area textarea {
+    flex: 1; border: none; outline: none; resize: none; padding: 16px;
+    font-size: 14px; line-height: 1.6; font-family: "SF Mono", "Fira Code", Menlo, monospace;
+    color: #333; background: #fafafa;
+  }
+  .drop-hint { padding: 8px 16px; font-size: 12px; color: #aaa; background: #f5f5f5; text-align: center; border-top: 1px dashed #ddd; }
+  .drop-hint.dragover { background: #e8f4fd; color: #1890ff; border-color: #1890ff; }
+
+  /* 样式面板 */
+  .style-panel { border-top: 1px solid #eee; }
+  .style-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  .style-item { padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f0f0; }
+  .style-item label { font-size: 12px; color: #666; white-space: nowrap; }
+  .style-item input[type="range"] { width: 90px; }
+  .style-item input[type="color"] { width: 32px; height: 24px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; padding: 0; }
+  .style-item .val { font-size: 11px; color: #999; width: 32px; text-align: right; }
+
+  /* 右侧预览 */
+  .right-panel { flex: 1; overflow-y: auto; padding: 24px; background: #e8e8e8; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .section-header h2 { font-size: 15px; font-weight: 600; color: #444; }
+  .section-header button {
+    padding: 6px 16px; font-size: 13px; border: none; border-radius: 6px; cursor: pointer;
+    background: #ff2442; color: #fff; font-weight: 500; transition: background .2s;
+  }
+  .section-header button:hover { background: #e0203a; }
+  .section-header button:disabled { background: #ccc; cursor: not-allowed; }
+
+  .preview-pages { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 32px; }
+  .page-wrapper { background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.12); border-radius: 4px; overflow: hidden; position: relative; }
+  .page-wrapper .page-label { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #fff; background: rgba(0,0,0,.45); padding: 2px 8px; border-radius: 10px; z-index: 2; }
+
+
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h1>📕 xhs_layout 小红书排版工具</h1>
+  <span class="hint">输入 Markdown 或拖拽 .md 文件，实时预览，下载图片</span>
+</div>
+
+<div class="main">
+  <!-- 左侧 -->
+  <div class="left-panel">
+    <h2>✏️ 编辑区</h2>
+    <div class="editor-area">
+      <textarea id="editor" placeholder="在此输入 Markdown 内容...&#10;&#10;# 标题（第一个一级标题单独成封面页）&#10;## 二级标题&#10;正文内容&#10;- 列表&#10;**加粗** *斜体* `代码`&#10;> 引用&#10;--- 分隔线"></textarea>
+      <div class="drop-hint" id="dropHint">拖拽 .md 文件和图片到此处（支持同时拖入多个文件）</div>
+    </div>
+
+    <div class="style-panel">
+      <h2>🎨 样式设置</h2>
+      <div class="style-grid" id="styleGrid"></div>
+    </div>
+  </div>
+
+  <!-- 右侧 -->
+  <div class="right-panel">
+    <div class="section-header">
+      <h2>封面页</h2>
+      <button id="btnDownloadTitle" onclick="downloadTitle()" disabled>下载封面图</button>
+    </div>
+    <div class="preview-pages" id="titlePreview"></div>
+
+    <div class="section-header">
+      <h2>正文页</h2>
+      <button id="btnDownloadAll" onclick="downloadAll()" disabled>下载全部图片</button>
+    </div>
+    <div class="preview-pages" id="contentPreview"></div>
+  </div>
+</div>
+
+<!-- 隐藏渲染区 -->
+<div id="renderArea" style="position:fixed;left:-9999px;top:0;z-index:-1;"></div>
+
+<script>
+const XHS_WIDTH = 1080;
+const XHS_HEIGHT = 1440;
+const PREVIEW_SCALE = 0.3;
+
+// 默认样式配置
+const defaultStyle = {
+  backgroundColor: '#F5F4EF',
+  fontSize: 42,
+  lineHeight: 1.4,
+  paragraphGap: 10,
+  textColor: '#33312E',
+  strongColor: '#2B6CB0',
+  h1Size: 52,
+  h2Size: 44,
+  h3Size: 40,
+  paddingVertical: 80,
+  paddingHorizontal: 60,
+  borderColor: '#2B6CB0',
+};
+
+// 当前样式（可修改）
+const style = { ...defaultStyle };
+
+// 样式控件定义
+const controls = [
+  { key: 'backgroundColor', label: '背景色', type: 'color' },
+  { key: 'textColor',       label: '正文颜色', type: 'color' },
+  { key: 'strongColor',     label: '加粗颜色', type: 'color' },
+  { key: 'borderColor',     label: '强调色', type: 'color' },
+  { key: 'fontSize',        label: '正文字号', type: 'range', min: 24, max: 48, step: 1 },
+  { key: 'lineHeight',      label: '行距', type: 'range', min: 1.2, max: 2.0, step: 0.1 },
+  { key: 'paragraphGap',    label: '段间距', type: 'range', min: 8, max: 40, step: 2 },
+  { key: 'h1Size',          label: 'H1字号', type: 'range', min: 36, max: 64, step: 2 },
+  { key: 'h2Size',          label: 'H2字号', type: 'range', min: 32, max: 56, step: 2 },
+  { key: 'h3Size',          label: 'H3字号', type: 'range', min: 28, max: 52, step: 2 },
+  { key: 'paddingVertical',  label: '上下边距', type: 'range', min: 40, max: 200, step: 10 },
+  { key: 'paddingHorizontal',label: '左右边距', type: 'range', min: 30, max: 120, step: 5 },
+];
+
+// 初始化样式面板
+function initStylePanel() {
+  const grid = document.getElementById('styleGrid');
+  controls.forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'style-item';
+    if (c.type === 'color') {
+      div.innerHTML = `<label>${c.label}</label><input type="color" value="${style[c.key]}" data-key="${c.key}">`;
+      div.querySelector('input').addEventListener('input', e => { style[c.key] = e.target.value; scheduleUpdate(); });
+    } else {
+      const val = style[c.key];
+      div.innerHTML = `<label>${c.label}</label><input type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="${val}" data-key="${c.key}"><span class="val">${val}</span>`;
+      const inp = div.querySelector('input');
+      const span = div.querySelector('.val');
+      inp.addEventListener('input', e => { style[c.key] = parseFloat(e.target.value); span.textContent = e.target.value; scheduleUpdate(); });
+    }
+    grid.appendChild(div);
+  });
+}
+
+// Markdown 解析（移植自 xhs_formatter.js）
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function inlineFormat(text) {
+  return escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+// 图片存储（filename -> dataURL）
+const imageStore = {};
+
+function parseMarkdown(text) {
+  // 去除 BOM
+  text = text.replace(/^\uFEFF/, '');
+  // 去除 YAML frontmatter（--- ... ---）
+  text = text.replace(/^---\n[\s\S]*?\n---\n?/, '');
+
+  const lines = text.split('\n');
+  let html = '';
+  let inList = false;
+  let firstH1 = true;
+  let titleHtml = '';
+  let firstParagraph = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, '');
+    const trimmed = line.trimStart();
+
+    // 标准 Markdown 图片 ![alt](path)
+    const mdImgMatch = trimmed.match(/^!\[([^\]]*)\]\((.+?)\)$/);
+    // Obsidian 图片 ![[filename]]
+    const obsImgMatch = trimmed.match(/^!\[\[(.+?)\]\]$/);
+
+    if (mdImgMatch) {
+      if (inList) { html += '</ul>'; inList = false; }
+      const imgName = mdImgMatch[2].split('/').pop();
+      const src = imageStore[imgName] || imageStore[mdImgMatch[2]];
+      if (src) {
+        html += `<div class="image-container"><img src="${src}" alt="${escapeHtml(mdImgMatch[1])}"></div>`;
+      }
+      // 无图片时静默跳过，不显示占位
+    } else if (obsImgMatch) {
+      if (inList) { html += '</ul>'; inList = false; }
+      const imgName = obsImgMatch[1];
+      const src = imageStore[imgName] || imageStore[imgName.split('/').pop()];
+      if (src) {
+        html += `<div class="image-container"><img src="${src}" alt=""></div>`;
+      }
+    } else if (trimmed.startsWith('# ') && !trimmed.startsWith('## ')) {
+      if (inList) { html += '</ul>'; inList = false; }
+      const t = escapeHtml(trimmed.slice(2));
+      if (firstH1) {
+        titleHtml = t;
+        firstH1 = false;
+      } else {
+        html += `<h1>${t}</h1>`;
+      }
+    } else if (trimmed.startsWith('### ')) {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<h3>${escapeHtml(trimmed.slice(4))}</h3>`;
+    } else if (trimmed.startsWith('## ')) {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<h2>${escapeHtml(trimmed.slice(3))}</h2>`;
+    } else if (trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
+      if (!inList) { html += '<ul>'; inList = true; }
+      html += `<li>${inlineFormat(trimmed.slice(2))}</li>`;
+    } else if (/^\d+\.\s/.test(trimmed)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<li class="numbered">${inlineFormat(trimmed.replace(/^\d+\.\s/, ''))}</li>`;
+    } else if (trimmed === '---' || trimmed === '===') {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += '<hr>';
+    } else if (trimmed.startsWith('> ')) {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<blockquote>${inlineFormat(trimmed.slice(2))}</blockquote>`;
+    } else if (trimmed === '') {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += '<br>';
+    } else {
+      if (inList) { html += '</ul>'; inList = false; }
+      // 检测独立的加粗行作为小标题（如 **第三步：xxx**）
+      const boldLineMatch = trimmed.match(/^\*\*(.+)\*\*$/);
+      if (boldLineMatch) {
+        html += `<h3>${escapeHtml(boldLineMatch[1])}</h3>`;
+      } else {
+        if (!firstParagraph && trimmed) {
+          firstParagraph = escapeHtml(trimmed);
+        }
+        html += `<p>${inlineFormat(trimmed)}</p>`;
+      }
+    }
+  }
+  if (inList) html += '</ul>';
+
+  // 如果没有 # 标题，用第一段文字作为封面标题
+  if (!titleHtml && firstParagraph) {
+    titleHtml = firstParagraph;
+    html = html.replace(`<p>${firstParagraph}</p>`, '');
+  }
+
+  return { titleHtml, bodyHtml: html };
+}
+
+// 生成页面 CSS（内联到渲染容器）
+function buildPageCSS() {
+  const s = style;
+  return `
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    .xhs-page {
+      width: ${XHS_WIDTH}px; min-height: ${XHS_HEIGHT}px;
+      background: ${s.backgroundColor};
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: ${s.fontSize}px; line-height: ${s.lineHeight};
+      color: ${s.textColor}; padding: ${s.paddingVertical}px ${s.paddingHorizontal}px;
+      word-wrap: break-word; overflow-wrap: break-word; position: relative;
+    }
+    .title-page {
+      width: ${XHS_WIDTH}px; height: ${XHS_HEIGHT}px;
+      background: ${s.backgroundColor};
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; position: relative;
+      --title-pad-v: 150px; --title-pad-h: 160px;
+      padding: var(--title-pad-v) var(--title-pad-h);
+    }
+    .title-page::before {
+      content: '\\201C'; position: absolute; top: calc(var(--title-pad-v) + 10px); left: calc(var(--title-pad-h) + 10px);
+      font-size: 380px; font-weight: 900; color: ${s.borderColor}; opacity: 0.1;
+      line-height: 0.8; font-family: Georgia, serif;
+    }
+    .title-page::after {
+      content: '右滑查看全文  →  →'; position: absolute; bottom: calc(var(--title-pad-v) + 20px); left: calc(var(--title-pad-h) + 10px);
+      font-size: 28px; color: #999; letter-spacing: 1px; font-weight: 400;
+    }
+    .main-title {
+      font-size: 80px; font-weight: 800; line-height: 1.25; padding: 0; max-width: 760px;
+      color: ${s.textColor}; letter-spacing: 2px; position: relative; z-index: 1;
+      word-break: break-word; overflow-wrap: anywhere; white-space: normal;
+    }
+    h1 { font-size: ${s.h1Size}px; font-weight: 800; color: ${s.textColor}; line-height: 1.4; margin-bottom: 24px; margin-top: 12px; letter-spacing: 1px; }
+    h2 { font-size: ${s.h2Size}px; font-weight: 700; color: ${s.textColor}; line-height: 1.5; margin-top: 48px; margin-bottom: 28px; padding-left: 12px; border-left: 6px solid ${s.borderColor}; }
+    h3 { font-size: ${s.h3Size}px; font-weight: 600; color: #333; line-height: 1.5; margin-top: 40px; margin-bottom: 20px; }
+    p { font-size: ${s.fontSize}px; line-height: ${s.lineHeight}; margin-bottom: ${s.paragraphGap}px; color: ${s.textColor}; text-align: justify; }
+    ul { margin: 12px 0 18px 0; padding-left: 0; list-style: none; }
+    li { font-size: ${s.fontSize}px; line-height: ${s.lineHeight}; margin-bottom: 8px; padding-left: 36px; position: relative; color: ${s.textColor}; }
+    li::before { content: "•"; position: absolute; left: 0; color: ${s.borderColor}; font-size: ${s.fontSize}px; top: 0; }
+    li.numbered::before { content: none; }
+    blockquote { background: #EBEBEB; border-left: 4px solid ${s.borderColor}; border-radius: 0 8px 8px 0; padding: 16px 24px; margin: 18px 0; font-size: ${s.fontSize - 2}px; color: #555; font-style: italic; }
+    hr { border: none; height: 1px; background: linear-gradient(to right, transparent, ${s.borderColor}, transparent); margin: 28px 0; opacity: 0.3; }
+    strong { color: ${s.strongColor}; font-weight: 700; }
+    em { color: #666; }
+    code { background: #E8E8E8; color: ${s.strongColor}; padding: 2px 8px; border-radius: 4px; font-size: ${s.fontSize - 4}px; font-family: "SF Mono", "Fira Code", monospace; }
+    .image-container { margin: 24px 0; text-align: center; }
+    .image-container img { max-width: 100%; height: auto; border-radius: 8px; }
+  `;
+}
+
+// 防截断：将跨页元素推到下一页，并在每页上下留出边距
+function preventTruncation(container) {
+  const padV = style.paddingVertical;
+  const blocks = container.querySelectorAll('p, h1, h2, h3, li, blockquote, hr');
+  for (const block of blocks) {
+    block.style.marginTop = '';
+  }
+  for (const block of blocks) {
+    const rect = block.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const top = rect.top - containerRect.top;
+    const bottom = rect.bottom - containerRect.top;
+    const pageIndex = Math.floor(top / XHS_HEIGHT);
+    const pageStart = pageIndex * XHS_HEIGHT;
+    const pageEnd = pageStart + XHS_HEIGHT;
+    // 每页的安全内容区域：上下各留 padV 的边距（第一页已有 CSS padding，跳过）
+    const safeTop = pageIndex === 0 ? pageStart : pageStart + padV;
+    const safeBottom = pageEnd - padV;
+
+    // 元素底部超出安全区域底部，推到下一页的安全区域顶部
+    if (bottom > safeBottom && top > safeTop + 20) {
+      const nextSafeTop = pageEnd + padV;
+      const pushDown = nextSafeTop - top;
+      block.style.marginTop = (parseFloat(getComputedStyle(block).marginTop) + pushDown) + 'px';
+    }
+    // 元素顶部在页面顶部的不安全区域内（非首页），推到安全区域
+    else if (pageIndex > 0 && top < safeTop && top > pageStart) {
+      const pushDown = safeTop - top;
+      block.style.marginTop = (parseFloat(getComputedStyle(block).marginTop) + pushDown) + 'px';
+    }
+  }
+}
+
+// 渲染并分页
+let titlePageEl = null;
+let contentPageEls = [];
+
+function renderPreview() {
+  const text = document.getElementById('editor').value;
+  if (!text.trim()) {
+    document.getElementById('titlePreview').innerHTML = '<p style="color:#aaa;font-size:14px;">输入内容后显示封面预览</p>';
+    document.getElementById('contentPreview').innerHTML = '<p style="color:#aaa;font-size:14px;">输入内容后显示正文预览</p>';
+    document.getElementById('btnDownloadTitle').disabled = true;
+    document.getElementById('btnDownloadAll').disabled = true;
+    titlePageEl = null;
+    contentPageEls = [];
+    return;
+  }
+
+  const { titleHtml, bodyHtml } = parseMarkdown(text);
+  const css = buildPageCSS();
+  const renderArea = document.getElementById('renderArea');
+  renderArea.innerHTML = '';
+
+  // 封面页
+  titlePageEl = null;
+  const titlePreview = document.getElementById('titlePreview');
+  titlePreview.innerHTML = '';
+
+  if (titleHtml) {
+    const titleDiv = document.createElement('div');
+    titleDiv.innerHTML = `<style>${css}</style><div class="title-page"><h1 class="main-title">${titleHtml}</h1></div>`;
+    renderArea.appendChild(titleDiv);
+    titlePageEl = titleDiv.querySelector('.title-page');
+
+    // 缩略预览
+    const wrapper = document.createElement('div');
+    wrapper.className = 'page-wrapper';
+    wrapper.style.width = (XHS_WIDTH * PREVIEW_SCALE) + 'px';
+    wrapper.style.height = (XHS_HEIGHT * PREVIEW_SCALE) + 'px';
+    wrapper.innerHTML = `<span class="page-label">封面</span>`;
+    const inner = document.createElement('div');
+    inner.style.cssText = `width:${XHS_WIDTH}px;height:${XHS_HEIGHT}px;transform:scale(${PREVIEW_SCALE});transform-origin:top left;pointer-events:none;`;
+    const clone = titleDiv.cloneNode(true);
+    inner.appendChild(clone);
+    wrapper.appendChild(inner);
+    titlePreview.appendChild(wrapper);
+    document.getElementById('btnDownloadTitle').disabled = false;
+  } else {
+    titlePreview.innerHTML = '<p style="color:#aaa;font-size:14px;">无封面（添加 # 标题 生成封面）</p>';
+    document.getElementById('btnDownloadTitle').disabled = true;
+  }
+
+  // 正文页
+  contentPageEls = [];
+  const contentPreview = document.getElementById('contentPreview');
+  contentPreview.innerHTML = '';
+
+  if (!bodyHtml.trim() || bodyHtml.replace(/<br>/g, '').trim() === '') {
+    contentPreview.innerHTML = '<p style="color:#aaa;font-size:14px;">无正文内容</p>';
+    document.getElementById('btnDownloadAll').disabled = true;
+    return;
+  }
+
+  const bodyDiv = document.createElement('div');
+  bodyDiv.innerHTML = `<style>${css}</style><div class="xhs-page">${bodyHtml}</div>`;
+  renderArea.appendChild(bodyDiv);
+
+  const pageEl = bodyDiv.querySelector('.xhs-page');
+
+  // 防截断
+  preventTruncation(pageEl);
+  // 二次防截断
+  preventTruncation(pageEl);
+
+  const totalH = pageEl.scrollHeight;
+  const pages = Math.max(1, Math.ceil(totalH / XHS_HEIGHT));
+  pageEl.style.minHeight = (pages * XHS_HEIGHT) + 'px';
+
+  // 生成预览缩略图 + 记录每页元素
+  for (let i = 0; i < pages; i++) {
+    // 创建单页裁剪容器
+    const clipDiv = document.createElement('div');
+    clipDiv.style.cssText = `width:${XHS_WIDTH}px;height:${XHS_HEIGHT}px;overflow:hidden;position:relative;`;
+    const innerClone = bodyDiv.cloneNode(true);
+    const innerPage = innerClone.querySelector('.xhs-page');
+    innerPage.style.marginTop = (-i * XHS_HEIGHT) + 'px';
+    clipDiv.appendChild(innerClone);
+    renderArea.appendChild(clipDiv);
+    contentPageEls.push(clipDiv);
+
+    // 缩略预览
+    const wrapper = document.createElement('div');
+    wrapper.className = 'page-wrapper';
+    wrapper.style.width = (XHS_WIDTH * PREVIEW_SCALE) + 'px';
+    wrapper.style.height = (XHS_HEIGHT * PREVIEW_SCALE) + 'px';
+    wrapper.innerHTML = `<span class="page-label">第 ${i + 1} 页</span>`;
+    const previewInner = document.createElement('div');
+    previewInner.style.cssText = `width:${XHS_WIDTH}px;height:${XHS_HEIGHT}px;transform:scale(${PREVIEW_SCALE});transform-origin:top left;pointer-events:none;overflow:hidden;position:relative;`;
+    const previewClone = bodyDiv.cloneNode(true);
+    const previewPage = previewClone.querySelector('.xhs-page');
+    previewPage.style.marginTop = (-i * XHS_HEIGHT) + 'px';
+    previewInner.appendChild(previewClone);
+    wrapper.appendChild(previewInner);
+    contentPreview.appendChild(wrapper);
+  }
+
+  document.getElementById('btnDownloadAll').disabled = false;
+}
+
+// 下载辅助
+async function captureElement(el, filename) {
+  const canvas = await html2canvas(el, {
+    width: XHS_WIDTH,
+    height: XHS_HEIGHT,
+    scale: 1,
+    useCORS: true,
+    backgroundColor: null,
+  });
+  const link = document.createElement('a');
+  link.download = filename;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+async function downloadTitle() {
+  if (!titlePageEl) return;
+  const btn = document.getElementById('btnDownloadTitle');
+  btn.disabled = true; btn.textContent = '生成中...';
+  try {
+    await captureElement(titlePageEl.parentElement, '封面.png');
+  } finally {
+    btn.disabled = false; btn.textContent = '下载封面图';
+  }
+}
+
+async function downloadAll() {
+  if (contentPageEls.length === 0) return;
+  const btn = document.getElementById('btnDownloadAll');
+  btn.disabled = true; btn.textContent = '生成中...';
+  try {
+    const startIdx = titlePageEl ? 1 : 0;
+    // 先下载封面
+    if (titlePageEl) {
+      await captureElement(titlePageEl.parentElement, '01.png');
+    }
+    // 下载正文页
+    for (let i = 0; i < contentPageEls.length; i++) {
+      const idx = String(i + 1 + startIdx).padStart(2, '0');
+      await captureElement(contentPageEls[i], `${idx}.png`);
+      // 小延迟避免浏览器吞下载
+      await new Promise(r => setTimeout(r, 300));
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = '下载全部图片';
+  }
+}
+
+// 防抖更新
+let updateTimer = null;
+function scheduleUpdate() {
+  clearTimeout(updateTimer);
+  updateTimer = setTimeout(renderPreview, 300);
+}
+
+// 拖拽 .md 文件 + 图片
+const editor = document.getElementById('editor');
+const dropHint = document.getElementById('dropHint');
+
+['dragenter', 'dragover'].forEach(evt => {
+  editor.addEventListener(evt, e => { e.preventDefault(); dropHint.classList.add('dragover'); });
+  dropHint.addEventListener(evt, e => { e.preventDefault(); dropHint.classList.add('dragover'); });
+});
+['dragleave', 'drop'].forEach(evt => {
+  editor.addEventListener(evt, () => dropHint.classList.remove('dragover'));
+  dropHint.addEventListener(evt, () => dropHint.classList.remove('dragover'));
+});
+
+function handleDrop(e) {
+  e.preventDefault();
+  const files = Array.from(e.dataTransfer.files);
+  let mdFile = null;
+  const imgFiles = [];
+
+  for (const file of files) {
+    if (file.name.endsWith('.md') || file.name.endsWith('.txt') || file.type.startsWith('text/')) {
+      mdFile = file;
+    } else if (file.type.startsWith('image/')) {
+      imgFiles.push(file);
+    }
+  }
+
+  // 加载图片到 imageStore
+  let imgLoaded = 0;
+  const totalImg = imgFiles.length;
+  function onAllImagesLoaded() {
+    if (mdFile) {
+      const reader = new FileReader();
+      reader.onload = ev => { editor.value = ev.target.result; scheduleUpdate(); };
+      reader.readAsText(mdFile);
+    } else if (totalImg > 0) {
+      scheduleUpdate();
+    }
+  }
+
+  if (totalImg === 0) {
+    onAllImagesLoaded();
+  } else {
+    for (const img of imgFiles) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        imageStore[img.name] = ev.target.result;
+        imgLoaded++;
+        if (imgLoaded >= totalImg) onAllImagesLoaded();
+      };
+      reader.readAsDataURL(img);
+    }
+  }
+}
+editor.addEventListener('drop', handleDrop);
+dropHint.addEventListener('drop', handleDrop);
+
+// 输入监听
+editor.addEventListener('input', scheduleUpdate);
+
+// 初始化
+initStylePanel();
+renderPreview();
+</script>
+</body>
+</html>

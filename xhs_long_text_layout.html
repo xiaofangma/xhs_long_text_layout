@@ -521,8 +521,17 @@ function escapeAttr(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
+function renderInlineImage(alt, rawUrl) {
+  const cleaned = stripMarkdownImageTitle(String(rawUrl || '').replace(/&amp;/g, '&'));
+  const src = resolveImageSource(cleaned);
+  if (!src) {
+    return escapeHtml(`![${alt}](${cleaned})`);
+  }
+  return `<img class="inline-markdown-image" src="${escapeAttr(src)}" alt="${escapeAttr(alt)}">`;
+}
 function inlineFormat(text) {
   return escapeHtml(text)
+    .replace(/!\[([^\]]*)\]\((.+?)\)/g, (_, alt, rawUrl) => renderInlineImage(alt, rawUrl))
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>');
@@ -531,15 +540,41 @@ function isRenderableUrl(url) {
   return /^(https?:)?\/\/.+/i.test(url) || /^data:image\//i.test(url);
 }
 const LOCAL_IMAGE_ROOT = '/Users/xiaofang/Documents/Obsidian/系统设置/attachments';
+function normalizeImageKey(raw) {
+  if (!raw) return '';
+  let value = String(raw);
+  try {
+    value = decodeURIComponent(value);
+  } catch (err) {
+    // 保留原始值，避免单个坏编码阻断整页渲染
+  }
+  return value
+    .replace(/^file:\/\//, '')
+    .split('?')[0]
+    .split('#')[0]
+    .trim()
+    .split('/')
+    .pop();
+}
+function stripMarkdownImageTitle(raw) {
+  const value = String(raw || '').trim();
+  const match = value.match(/^(.+?)(?:\s+"[^"]*")?$/);
+  return match ? match[1].trim() : value;
+}
 function resolveLocalImagePath(rawUrl) {
   if (!rawUrl) return null;
-  if (rawUrl.startsWith('/Users/')) {
-    return `file://${rawUrl}`;
+  const cleaned = stripMarkdownImageTitle(rawUrl);
+  const toFileUrl = (path) => encodeURI(`file://${path}`);
+  if (cleaned.startsWith('file://')) {
+    return encodeURI(cleaned);
+  }
+  if (cleaned.startsWith('/Users/')) {
+    return toFileUrl(cleaned);
   }
   // 相对路径或纯文件名，拼到本地附件目录
-  if (!/^[a-zA-Z]+:\/\//.test(rawUrl)) {
-    const cleaned = rawUrl.replace(/^\.?\//, '');
-    return `file://${LOCAL_IMAGE_ROOT.replace(/\/$/, '')}/${cleaned}`;
+  if (!/^[a-zA-Z]+:\/\//.test(cleaned)) {
+    const localPath = cleaned.replace(/^\.?\//, '');
+    return toFileUrl(`${LOCAL_IMAGE_ROOT.replace(/\/$/, '')}/${localPath}`);
   }
   return null;
 }
@@ -557,6 +592,15 @@ function estimateWordCount(text) {
 
 // 图片存储（filename -> dataURL）
 const imageStore = {};
+function resolveImageSource(rawUrl) {
+  if (!rawUrl) return null;
+  const cleaned = stripMarkdownImageTitle(rawUrl);
+  const key = normalizeImageKey(cleaned);
+  const direct = imageStore[cleaned] || imageStore[key] || imageStore[normalizeImageKey(decodeURIComponent(cleaned))];
+  if (direct) return direct;
+  if (isRenderableUrl(cleaned)) return cleaned;
+  return resolveLocalImagePath(cleaned);
+}
 
 function parseMarkdown(text) {
   // 去除 BOM
@@ -582,18 +626,18 @@ function parseMarkdown(text) {
 
     if (mdImgMatch) {
       if (inList) { html += '</ul>'; inList = false; }
-      const rawUrl = mdImgMatch[2].trim();
-      const imgName = rawUrl.split('/').pop();
-      const localResolved = resolveLocalImagePath(rawUrl);
-      const src = imageStore[imgName] || imageStore[rawUrl] || (isRenderableUrl(rawUrl) ? rawUrl : null) || localResolved;
+      const rawUrl = stripMarkdownImageTitle(mdImgMatch[2].trim());
+      const src = resolveImageSource(rawUrl);
       if (src) {
         html += `<div class="image-container"><img src="${src}" alt="${escapeHtml(mdImgMatch[1])}"></div>`;
       }
       // 无图片时静默跳过，不显示占位
     } else if (obsImgMatch) {
       if (inList) { html += '</ul>'; inList = false; }
-      const imgName = obsImgMatch[1];
-      const src = imageStore[imgName] || imageStore[imgName.split('/').pop()];
+      const rawName = stripMarkdownImageTitle(obsImgMatch[1]);
+      const imgName = normalizeImageKey(rawName);
+      const localResolved = resolveLocalImagePath(rawName);
+      const src = imageStore[rawName] || imageStore[imgName] || localResolved;
       if (src) {
         html += `<div class="image-container"><img src="${src}" alt=""></div>`;
       }
@@ -729,6 +773,7 @@ function buildPageCSS() {
     strong { color: ${s.strongColor}; font-weight: 700; }
     em { color: #666; }
     code { background: #E8E8E8; color: ${s.strongColor}; padding: 2px 8px; border-radius: 4px; font-size: ${s.bodyFontSize - 4}px; font-family: "SF Mono", "Fira Code", monospace; }
+    .inline-markdown-image { max-width: 100%; height: auto; vertical-align: middle; border-radius: 6px; }
     .image-container { margin: 24px 0; text-align: center; }
     .image-container img { max-width: 100%; height: auto; border-radius: 8px; }
   `;
@@ -1014,7 +1059,11 @@ function handleDrop(e) {
     for (const img of imgFiles) {
       const reader = new FileReader();
       reader.onload = ev => {
-        imageStore[img.name] = ev.target.result;
+        const data = ev.target.result;
+        const baseName = normalizeImageKey(img.name);
+        imageStore[img.name] = data;
+        imageStore[baseName] = data;
+        imageStore[decodeURIComponent(baseName)] = data;
         imgLoaded++;
         if (imgLoaded >= totalImg) onAllImagesLoaded();
       };

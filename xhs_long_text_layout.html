@@ -45,7 +45,7 @@
 
   .main {
     display: grid;
-    grid-template-columns: 332px 312px minmax(420px, 1fr);
+    grid-template-columns: 332px minmax(420px, 1fr) 312px;
     flex: 1;
     overflow: hidden;
     gap: 10px;
@@ -232,7 +232,21 @@
     </div>
   </div>
 
-  <!-- 中间 -->
+  <div class="right-panel">
+    <div class="section-header">
+      <h2>封面页</h2>
+      <button id="btnDownloadTitle" onclick="downloadTitle()" disabled>下载封面图</button>
+    </div>
+    <div class="preview-pages" id="titlePreview"></div>
+
+    <div class="section-header">
+      <h2>正文页</h2>
+      <button id="btnDownloadAll" onclick="downloadAll()" disabled>下载全部图片</button>
+    </div>
+    <div class="preview-pages" id="contentPreview"></div>
+  </div>
+
+  <!-- 右侧 -->
   <div class="middle-panel">
     <div class="middle-scroll">
       <div class="template-panel">
@@ -276,21 +290,6 @@
         <div class="style-grid" id="styleGrid"></div>
       </div>
     </div>
-  </div>
-
-  <!-- 右侧 -->
-  <div class="right-panel">
-    <div class="section-header">
-      <h2>封面页</h2>
-      <button id="btnDownloadTitle" onclick="downloadTitle()" disabled>下载封面图</button>
-    </div>
-    <div class="preview-pages" id="titlePreview"></div>
-
-    <div class="section-header">
-      <h2>正文页</h2>
-      <button id="btnDownloadAll" onclick="downloadAll()" disabled>下载全部图片</button>
-    </div>
-    <div class="preview-pages" id="contentPreview"></div>
   </div>
 </div>
 

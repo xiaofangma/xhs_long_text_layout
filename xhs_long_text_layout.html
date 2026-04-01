@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>最好用的小红书长文排版工具</title>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -404,6 +405,126 @@ function exportConfig() {
   link.download = 'xhs-layout-config.json';
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function waitForImageLoad(img) {
+  if (!img || !img.src) return Promise.resolve();
+  if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+  return new Promise(resolve => {
+    const done = () => {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      resolve();
+    };
+    img.addEventListener('load', done, { once: true });
+    img.addEventListener('error', done, { once: true });
+  });
+}
+
+async function waitForImages(root) {
+  const imgs = Array.from(root.querySelectorAll('img'));
+  await Promise.all(imgs.map(waitForImageLoad));
+}
+
+async function canvasToBlob(canvas) {
+  return await new Promise((resolve, reject) => {
+    if (!canvas.toBlob) {
+      try {
+        const dataUrl = canvas.toDataURL('image/png');
+        resolve(dataURLToBlob(dataUrl));
+      } catch (err) {
+        reject(err);
+      }
+      return;
+    }
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error('Failed to create image blob'));
+    }, 'image/png');
+  });
+}
+
+function dataURLToBlob(dataURL) {
+  const [meta, data] = dataURL.split(',');
+  const mimeMatch = meta.match(/data:([^;]+)/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+  const binary = atob(data);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    link.remove();
+  }, 1000);
+}
+
+function createCaptureClone(el) {
+  const host = document.createElement('div');
+  host.style.position = 'fixed';
+  host.style.left = '-20000px';
+  host.style.top = '0';
+  host.style.width = XHS_WIDTH + 'px';
+  host.style.height = XHS_HEIGHT + 'px';
+  host.style.overflow = 'hidden';
+  host.style.background = 'transparent';
+  host.style.pointerEvents = 'none';
+  host.style.zIndex = '-1';
+  const clone = el.cloneNode(true);
+  host.appendChild(clone);
+  document.body.appendChild(host);
+  return { host, clone };
+}
+
+async function inlineCaptureImages(root) {
+  const imgs = Array.from(root.querySelectorAll('img'));
+  await Promise.all(imgs.map(async img => {
+    const src = img.currentSrc || img.src || '';
+    if (!src || src.startsWith('data:')) return;
+    try {
+      const response = await fetch(src, { mode: 'cors', credentials: 'omit' });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl) img.src = dataUrl;
+    } catch (err) {
+      const altText = (img.alt || 'image').replace(/[<>&"]/g, '');
+      const placeholder = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">
+        <rect width="240" height="160" rx="18" fill="#E8E1D6"/>
+        <rect x="18" y="18" width="204" height="124" rx="14" fill="#F5EFE7" stroke="#D7CBBE" stroke-width="2" stroke-dasharray="8 8"/>
+        <text x="120" y="82" text-anchor="middle" font-size="18" font-family="Arial, sans-serif" fill="#8C8477">${altText || 'image'}</text>
+      </svg>`;
+      img.src = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(placeholder)}`;
+    }
+  }));
+}
+
+async function prepareCaptureElement(el) {
+  const { host, clone } = createCaptureClone(el);
+  try {
+    await waitForImages(clone);
+    await inlineCaptureImages(clone);
+    await waitForImages(clone);
+    return { host, clone };
+  } catch (err) {
+    host.remove();
+    throw err;
+  }
 }
 
 function initStylePanel() {
@@ -960,17 +1081,22 @@ function renderPreview() {
 
 // 下载辅助
 async function captureElement(el, filename) {
-  const canvas = await html2canvas(el, {
-    width: XHS_WIDTH,
-    height: XHS_HEIGHT,
-    scale: 1,
-    useCORS: true,
-    backgroundColor: null,
-  });
-  const link = document.createElement('a');
-  link.download = filename;
-  link.href = canvas.toDataURL('image/png');
-  link.click();
+  const { host, clone } = await prepareCaptureElement(el);
+  try {
+    const canvas = await html2canvas(clone, {
+      width: XHS_WIDTH,
+      height: XHS_HEIGHT,
+      scale: Math.max(2, window.devicePixelRatio || 1),
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: null,
+      imageTimeout: 15000,
+    });
+    const blob = await canvasToBlob(canvas);
+    triggerBlobDownload(blob, filename);
+  } finally {
+    host.remove();
+  }
 }
 
 async function downloadTitle() {
@@ -978,7 +1104,7 @@ async function downloadTitle() {
   const btn = document.getElementById('btnDownloadTitle');
   btn.disabled = true; btn.textContent = '生成中...';
   try {
-    await captureElement(titlePageEl.parentElement, '封面.png');
+    await captureElement(titlePageEl, '封面.png');
   } finally {
     btn.disabled = false; btn.textContent = '下载封面图';
   }
@@ -989,17 +1115,57 @@ async function downloadAll() {
   const btn = document.getElementById('btnDownloadAll');
   btn.disabled = true; btn.textContent = '生成中...';
   try {
-    const startIdx = titlePageEl ? 1 : 0;
-    // 先下载封面
-    if (titlePageEl) {
-      await captureElement(titlePageEl.parentElement, '01.png');
-    }
-    // 下载正文页
-    for (let i = 0; i < contentPageEls.length; i++) {
-      const idx = String(i + 1 + startIdx).padStart(2, '0');
-      await captureElement(contentPageEls[i], `${idx}.png`);
-      // 小延迟避免浏览器吞下载
-      await new Promise(r => setTimeout(r, 300));
+    if (window.JSZip) {
+      const zip = new JSZip();
+      let fileIndex = 1;
+      if (titlePageEl) {
+        const preparedTitle = await prepareCaptureElement(titlePageEl);
+        try {
+          const titleCanvas = await html2canvas(preparedTitle.clone, {
+            width: XHS_WIDTH,
+            height: XHS_HEIGHT,
+            scale: Math.max(2, window.devicePixelRatio || 1),
+            useCORS: true,
+            allowTaint: false,
+            backgroundColor: null,
+            imageTimeout: 15000,
+          });
+          zip.file('01-封面.png', await canvasToBlob(titleCanvas));
+        } finally {
+          preparedTitle.host.remove();
+        }
+        fileIndex = 2;
+      }
+      for (let i = 0; i < contentPageEls.length; i++) {
+        const preparedPage = await prepareCaptureElement(contentPageEls[i]);
+        try {
+          const canvas = await html2canvas(preparedPage.clone, {
+            width: XHS_WIDTH,
+            height: XHS_HEIGHT,
+            scale: Math.max(2, window.devicePixelRatio || 1),
+            useCORS: true,
+            allowTaint: false,
+            backgroundColor: null,
+            imageTimeout: 15000,
+          });
+          const idx = String(i + fileIndex).padStart(2, '0');
+          zip.file(`${idx}.png`, await canvasToBlob(canvas));
+        } finally {
+          preparedPage.host.remove();
+        }
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      triggerBlobDownload(blob, 'xhs-layout-images.zip');
+    } else {
+      const startIdx = titlePageEl ? 1 : 0;
+      if (titlePageEl) {
+        await captureElement(titlePageEl.parentElement, '01.png');
+      }
+      for (let i = 0; i < contentPageEls.length; i++) {
+        const idx = String(i + 1 + startIdx).padStart(2, '0');
+        await captureElement(contentPageEls[i], `${idx}.png`);
+        await new Promise(r => setTimeout(r, 300));
+      }
     }
   } finally {
     btn.disabled = false; btn.textContent = '下载全部图片';
